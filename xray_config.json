@@ -26,20 +26,11 @@
     "inbounds": [
         {
             "tag": "tun-in",
+            "port": 0,
             "protocol": "tun",
             "settings": {
-                "address": [
-                    "10.0.0.1/24"
-                ],
-                "mtu": 1500,
-                "sniffing": {
-                    "enabled": true,
-                    "destOverride": [
-                        "http",
-                        "tls",
-                        "quic"
-                    ]
-                }
+                "name": "xray0",
+                "MTU": 1500
             }
         }
     ],
@@ -51,8 +42,7 @@
                 "vnext": [
                     {
                         "address": "${VPS_IP}",
-                        "port": ${VPS_PORT
-                        },
+                        "port": ${VPS_PORT},
                         "users": [
                             {
                                 "id": "${UUID}",
@@ -70,6 +60,9 @@
                     "fingerprint": "chrome",
                     "serverName": "www.apple.com",
                     "shortId": ""
+                },
+                "sockopt": {
+                    "mark": 255
                 },
                 "xhttpSettings": {
                     "path": "${XHTTP_PATH}",

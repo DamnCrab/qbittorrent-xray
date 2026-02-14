@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# 1) Ensure /dev/net/tun exists (not strictly required for TPROXY, but harmless)
+# 1) Ensure /dev/net/tun exists
 if [ ! -c /dev/net/tun ]; then
   mkdir -p /dev/net
   mknod /dev/net/tun c 10 200 || true
@@ -30,72 +30,73 @@ fi
 XRAY_PID=$!
 echo "[entrypoint] Xray started, pid=$XRAY_PID"
 
-# 4) Apply TPROXY rules (force legacy iptables to avoid nf_tables issues)
-IPT="iptables"
-IP6T="ip6tables"
+# 4) Best-effort cleanup of legacy TPROXY rules from older image versions
+ip rule del fwmark 1 lookup 100 2>/dev/null || true
+ip route flush table 100 2>/dev/null || true
 
-if command -v iptables-legacy >/dev/null 2>&1; then
-  IPT="iptables-legacy"
-fi
-if command -v ip6tables-legacy >/dev/null 2>&1; then
-  IP6T="ip6tables-legacy"
+if command -v iptables >/dev/null 2>&1; then
+  IPT="iptables"
+  if command -v iptables-legacy >/dev/null 2>&1; then
+    IPT="iptables-legacy"
+  fi
+
+  while $IPT -t mangle -D OUTPUT -j XRAY_TPROXY 2>/dev/null; do :; done
+  while $IPT -t mangle -D PREROUTING -p tcp -m socket -j XRAY_DIVERT 2>/dev/null; do :; done
+  $IPT -t mangle -F XRAY_TPROXY 2>/dev/null || true
+  $IPT -t mangle -X XRAY_TPROXY 2>/dev/null || true
+  $IPT -t mangle -F XRAY_DIVERT 2>/dev/null || true
+  $IPT -t mangle -X XRAY_DIVERT 2>/dev/null || true
 fi
 
-TPROXY_PORT="12345"
-FW_MARK="1"
-TABLE_ID="100"
+# 5) Configure TUN routing for qBittorrent traffic (TCP + UDP)
+TUN_IFACE="${XRAY_TUN_IFACE:-}"
+if [ -z "$TUN_IFACE" ]; then
+  TUN_IFACE="$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$XRAY_CONFIG" | head -n1)"
+fi
+TUN_IFACE="${TUN_IFACE:-xray0}"
+
+TUN_ADDR="${XRAY_TUN_ADDR:-10.251.0.1/30}"
+TUN_TABLE="${XRAY_TUN_TABLE:-1001}"
+
+# Wait until Xray creates the tun interface
+for _ in $(seq 1 40); do
+  if ip link show "$TUN_IFACE" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.25
+done
+
+if ! ip link show "$TUN_IFACE" >/dev/null 2>&1; then
+  echo "[entrypoint] Fatal Error: TUN interface '$TUN_IFACE' was not created by Xray."
+  kill "$XRAY_PID" 2>/dev/null || true
+  exit 1
+fi
+
+ip link set dev "$TUN_IFACE" up
+ip addr replace "$TUN_ADDR" dev "$TUN_IFACE"
 
 # qBittorrent user (linuxserver images normally run as user 'abc')
 QB_UID=""
 if id -u abc >/dev/null 2>&1; then
   QB_UID="$(id -u abc)"
-  echo "[entrypoint] Detected qB user: abc (uid=$QB_UID)"
-else
-  echo "[entrypoint] WARNING: user abc not found. Will tproxy ALL local traffic (more aggressive)."
+elif [ -n "${PUID:-}" ]; then
+  QB_UID="$PUID"
 fi
 
-# 4.1) Policy routing for TPROXY-marked packets
-ip rule del fwmark ${FW_MARK} lookup ${TABLE_ID} 2>/dev/null || true
-ip route flush table ${TABLE_ID} 2>/dev/null || true
-ip rule add fwmark ${FW_MARK} lookup ${TABLE_ID}
-ip route add local 0.0.0.0/0 dev lo table ${TABLE_ID}
+# Route only qBittorrent traffic via tun to avoid looping Xray's own uplink traffic
+ip route flush table "$TUN_TABLE" 2>/dev/null || true
+ip route add default dev "$TUN_IFACE" table "$TUN_TABLE"
 
-# 4.2) Chains
-$IPT -t mangle -N XRAY_TPROXY 2>/dev/null || true
-$IPT -t mangle -F XRAY_TPROXY
-
-$IPT -t mangle -N XRAY_DIVERT 2>/dev/null || true
-$IPT -t mangle -F XRAY_DIVERT
-$IPT -t mangle -A XRAY_DIVERT -j MARK --set-mark ${FW_MARK}
-$IPT -t mangle -A XRAY_DIVERT -j ACCEPT
-
-# (Optional optimization) Divert packets for existing local sockets
-# If your kernel/iptables doesn't support -m socket, these lines may fail.
-# In that case, comment them out.
-$IPT -t mangle -C PREROUTING -p tcp -m socket -j XRAY_DIVERT 2>/dev/null || \
-  $IPT -t mangle -A PREROUTING -p tcp -m socket -j XRAY_DIVERT
-
-# 4.3) Bypass local/private and Docker DNS to avoid loops & keep LAN direct
-$IPT -t mangle -A XRAY_TPROXY -d 127.0.0.0/8 -j RETURN
-$IPT -t mangle -A XRAY_TPROXY -d 10.0.0.0/8 -j RETURN
-$IPT -t mangle -A XRAY_TPROXY -d 172.16.0.0/12 -j RETURN
-$IPT -t mangle -A XRAY_TPROXY -d 192.168.0.0/16 -j RETURN
-$IPT -t mangle -A XRAY_TPROXY -d 127.0.0.11/32 -j RETURN
-
-# 4.4) TPROXY redirect (TCP+UDP) to Xray's tproxy-in port
-$IPT -t mangle -A XRAY_TPROXY -p tcp -j TPROXY --on-port ${TPROXY_PORT} --tproxy-mark 0x${FW_MARK}/0x${FW_MARK}
-$IPT -t mangle -A XRAY_TPROXY -p udp -j TPROXY --on-port ${TPROXY_PORT} --tproxy-mark 0x${FW_MARK}/0x${FW_MARK}
-
-# 4.5) Attach to OUTPUT (only qB user traffic if possible)
-# remove old attachments then re-add
-$IPT -t mangle -D OUTPUT -j XRAY_TPROXY 2>/dev/null || true
 if [ -n "$QB_UID" ]; then
-  $IPT -t mangle -A OUTPUT -m owner --uid-owner "$QB_UID" -j XRAY_TPROXY
+  ip rule del uidrange "${QB_UID}-${QB_UID}" lookup "$TUN_TABLE" 2>/dev/null || true
+  ip rule add uidrange "${QB_UID}-${QB_UID}" lookup "$TUN_TABLE"
+  echo "[entrypoint] TUN routing enabled on $TUN_IFACE via table $TUN_TABLE for qB uid=$QB_UID"
 else
-  $IPT -t mangle -A OUTPUT -j XRAY_TPROXY
+  # Best-effort fallback when user id cannot be detected: route all non-root traffic.
+  ip rule del uidrange "1-4294967294" lookup "$TUN_TABLE" 2>/dev/null || true
+  ip rule add uidrange "1-4294967294" lookup "$TUN_TABLE"
+  echo "[entrypoint] WARNING: qB uid not found, routing all non-root traffic via $TUN_IFACE"
 fi
 
-echo "[entrypoint] TPROXY rules applied via $IPT"
-
-# 5) Start qBittorrent via linuxserver init
+# 6) Start qBittorrent via linuxserver init
 exec /init
