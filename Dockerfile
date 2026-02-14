@@ -4,7 +4,15 @@ FROM lscr.io/linuxserver/qbittorrent:latest
 ARG TARGETARCH
 
 # 安装必要工具
-RUN apk add --no-cache curl unzip ca-certificates gettext bash
+RUN apk add --no-cache \
+    bash \
+    curl \
+    unzip \
+    ca-certificates \
+    gettext \
+    iproute2 \
+    iptables \
+    ip6tables
 
 # 安装最新版 Xray
 RUN set -ex && \

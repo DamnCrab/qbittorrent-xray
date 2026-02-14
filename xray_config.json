@@ -2,6 +2,14 @@
     "log": {
         "loglevel": "warning"
     },
+    "reverse": {
+        "bridges": [
+            {
+                "tag": "bridge",
+                "domain": "private.qb.tunnel"
+            }
+        ]
+    },
     "dns": {
         "servers": [
             {
@@ -73,11 +81,35 @@
             "tag": "direct",
             "protocol": "freedom",
             "settings": {}
+        },
+        {
+            "tag": "to-qb",
+            "protocol": "freedom",
+            "settings": {
+                "redirect": "127.0.0.1:51413"
+            }
         }
     ],
     "routing": {
         "domainStrategy": "IPIfNonMatch",
         "rules": [
+            {
+                "type": "field",
+                "inboundTag": [
+                    "bridge"
+                ],
+                "domain": [
+                    "full:private.qb.tunnel"
+                ],
+                "outboundTag": "vps-out"
+            },
+            {
+                "type": "field",
+                "inboundTag": [
+                    "bridge"
+                ],
+                "outboundTag": "to-qb"
+            },
             {
                 "type": "field",
                 "ip": [
