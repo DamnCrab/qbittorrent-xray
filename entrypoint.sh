@@ -10,6 +10,104 @@ fi
 
 XRAY_CONFIG="/etc/xray/config.json"
 XRAY_TEMPLATE="/usr/share/xray/config.template"
+QB_CONF="/config/qBittorrent/qBittorrent.conf"
+QB_DEFAULT_PORT="${XRAY_QB_FIRST_RUN_PORT:-51413}"
+
+is_valid_port() {
+  case "$1" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+detect_qb_port_from_conf() {
+  local file="$1"
+  local port
+  [ -f "$file" ] || return 0
+
+  port="$(sed -n 's/^Session\\Port=\([0-9][0-9]*\)\r\?$/\1/p' "$file" | head -n1)"
+  if [ -z "$port" ]; then
+    port="$(sed -n 's/^Connection\\PortRangeMin=\([0-9][0-9]*\)\r\?$/\1/p' "$file" | head -n1)"
+  fi
+  printf '%s\n' "$port"
+}
+
+set_ini_value() {
+  local file="$1"
+  local section="$2"
+  local key="$3"
+  local value="$4"
+  local tmp_file
+
+  tmp_file="$(mktemp)"
+  awk -v section="$section" -v key="$key" -v value="$value" '
+    BEGIN {
+      in_section = 0
+      section_found = 0
+      key_written = 0
+    }
+    /^\[/ {
+      if (in_section && !key_written) {
+        print key "=" value
+        key_written = 1
+      }
+      in_section = ($0 == "[" section "]")
+      if (in_section) {
+        section_found = 1
+      }
+      print
+      next
+    }
+    {
+      if (in_section && index($0, key "=") == 1) {
+        if (!key_written) {
+          print key "=" value
+          key_written = 1
+        }
+        next
+      }
+      print
+    }
+    END {
+      if (!section_found) {
+        print ""
+        print "[" section "]"
+        print key "=" value
+      } else if (in_section && !key_written) {
+        print key "=" value
+      }
+    }
+  ' "$file" > "$tmp_file"
+
+  cat "$tmp_file" > "$file"
+  rm -f "$tmp_file"
+}
+
+sync_qb_port_settings() {
+  local file="$1"
+  local port="$2"
+
+  if [ ! -f "$file" ]; then
+    echo "[entrypoint] qB config not found yet. Will rely on TORRENTING_PORT=$port during initialization."
+    return
+  fi
+
+  set_ini_value "$file" "BitTorrent" "Session\\Port" "$port"
+  set_ini_value "$file" "Preferences" "Connection\\PortRangeMin" "$port"
+  echo "[entrypoint] qB config synced: Session\\Port=$port, Connection\\PortRangeMin=$port"
+}
+
+sync_xray_redirect_port() {
+  local file="$1"
+  local port="$2"
+
+  if grep -Eq '"redirect"[[:space:]]*:[[:space:]]*"127\.0\.0\.1:[^"]+"' "$file"; then
+    sed -E -i 's/("redirect"[[:space:]]*:[[:space:]]*"127\.0\.0\.1:)[^"]+"/\1'"$port"'"/g' "$file"
+    echo "[entrypoint] Xray redirect synced to 127.0.0.1:$port"
+  else
+    echo "[entrypoint] Xray redirect not found in $file, skipped."
+  fi
+}
 
 # 2) Config generation logic (use mounted config if present; otherwise template)
 if [ -f "$XRAY_CONFIG" ]; then
@@ -25,12 +123,30 @@ else
   fi
 fi
 
-# 3) Start Xray in background
+# 3) Resolve torrent port, then sync qB/Xray to the same value
+RESOLVED_TORRENT_PORT="${TORRENTING_PORT:-}"
+if [ -z "$RESOLVED_TORRENT_PORT" ]; then
+  RESOLVED_TORRENT_PORT="$(detect_qb_port_from_conf "$QB_CONF")"
+fi
+if ! is_valid_port "$RESOLVED_TORRENT_PORT"; then
+  RESOLVED_TORRENT_PORT="$QB_DEFAULT_PORT"
+fi
+if ! is_valid_port "$RESOLVED_TORRENT_PORT"; then
+  RESOLVED_TORRENT_PORT="51413"
+fi
+
+export TORRENTING_PORT="$RESOLVED_TORRENT_PORT"
+echo "[entrypoint] Effective TORRENTING_PORT=$TORRENTING_PORT"
+
+sync_qb_port_settings "$QB_CONF" "$TORRENTING_PORT"
+sync_xray_redirect_port "$XRAY_CONFIG" "$TORRENTING_PORT"
+
+# 4) Start Xray in background
 /usr/bin/xray run -c "$XRAY_CONFIG" &
 XRAY_PID=$!
 echo "[entrypoint] Xray started, pid=$XRAY_PID"
 
-# 4) Best-effort cleanup of legacy TPROXY rules from older image versions
+# 5) Best-effort cleanup of legacy TPROXY rules from older image versions
 ip rule del fwmark 1 lookup 100 2>/dev/null || true
 ip route flush table 100 2>/dev/null || true
 
@@ -48,7 +164,7 @@ if command -v iptables >/dev/null 2>&1; then
   $IPT -t mangle -X XRAY_DIVERT 2>/dev/null || true
 fi
 
-# 5) Configure TUN routing for qBittorrent traffic (TCP + UDP)
+# 6) Configure TUN routing for qBittorrent traffic (TCP + UDP)
 TUN_IFACE="${XRAY_TUN_IFACE:-}"
 if [ -z "$TUN_IFACE" ]; then
   TUN_IFACE="$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$XRAY_CONFIG" | head -n1)"
@@ -124,5 +240,5 @@ else
   echo "[entrypoint] WARNING: qB uid not found, routing all non-root traffic via $TUN_IFACE (pref=$TUN_RULE_PREF, bypass=$BYPASS_CIDRS)"
 fi
 
-# 6) Start qBittorrent via linuxserver init
+# 7) Start qBittorrent via linuxserver init
 exec /init

@@ -10,9 +10,14 @@ services:
     environment:
       - PUID=1000
       - PGID=100
-      - TZ=Asia/Shanghai
+      - TZ=Asia/Shanghais
       - WEBUI_PORT=8080
+      - TORRENTING_PORT=51414
     volumes:
       - ./data/config:/config
       - ./data/xray:/etc/xray
       - ./data/downloads:/downloads
+    ports:
+      - "8080:8080" # WebUI 端口
+      - "51413:51413/tcp"
+      - "51413:51413/udp"

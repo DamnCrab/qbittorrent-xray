@@ -35,6 +35,7 @@ services:
       - PGID=1000
       - TZ=Asia/Shanghai
       - WEBUI_PORT=8080
+      - TORRENTING_PORT=51413
       - XRAY_QB_UID=1000
     volumes:
       - ./data/config:/config
@@ -95,6 +96,7 @@ docker compose up -d
 - `Network Interface` 设为 `Any interface`（默认更兼容）。
 - 不强制要求在 qB 内再配置 SOCKS5（当前方案是透明接管）。
 - 监听端口与映射端口保持一致（例如 `51413`）。
+- 建议显式设置 `TORRENTING_PORT=51413`；每次启动会按该值同步 qB 监听端口和 Xray 到 qB 的 `redirect` 端口。未设置时会沿用现有 qB 配置端口，若无法识别则回落到 `51413`。
 
 ## 如何确认 qB 流量已走 Xray
 
