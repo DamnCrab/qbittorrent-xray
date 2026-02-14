@@ -1,11 +1,21 @@
 FROM lscr.io/linuxserver/qbittorrent:latest
 
+# 定义构建参数，由 Docker BuildKit 自动填充
+ARG TARGETARCH
+
 # 安装必要工具
-RUN apk add --no-cache curl unzip ca-certificates gettext
+RUN apk add --no-cache curl unzip ca-certificates gettext bash
 
 # 安装最新版 Xray
 RUN set -ex && \
-    curl -L -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip" && \
+    ARCH="" && \
+    case "$TARGETARCH" in \
+    "amd64") ARCH="64" ;; \
+    "arm64") ARCH="arm64-v8a" ;; \
+    *) echo "Unsupported architecture: $TARGETARCH"; exit 1 ;; \
+    esac && \
+    echo "Downloading Xray for architecture: $ARCH" && \
+    curl -L -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${ARCH}.zip" && \
     unzip /tmp/xray.zip -d /tmp && \
     mv /tmp/xray /usr/bin/xray && \
     chmod +x /usr/bin/xray && \
