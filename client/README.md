@@ -50,8 +50,11 @@ services:
 启动：
 
 ```bash
+cd client
 docker compose up -d
 ```
+
+如果你是从旧版根目录结构迁移过来（原来是 `./data`），请先把旧数据目录移动到 `client/data`。
 
 ## Xray 配置说明
 
@@ -132,6 +135,7 @@ docker exec -it qb-xray sh -lc 'ip -s link show xray0'
 ## 手动构建镜像
 
 ```bash
+cd client
 docker build -t qb-xray-local .
 docker buildx build --platform linux/amd64,linux/arm64 -t your-repo/qb-xray:latest .
 ```

@@ -1,0 +1,26 @@
+services:
+  xray-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xray-server
+    restart: unless-stopped
+    environment:
+      - XRAY_PUBLIC_HOST=your.domain.com
+      - REALITY_SERVER_NAME=www.apple.com
+      - REALITY_TARGET=www.apple.com:443
+      - REVERSE_DOMAIN=private.qb.tunnel
+      - REALITY_PORT=443
+      - XHTTP_PORT=8443
+      - REVERSE_REALITY_PORT=2443
+      - REVERSE_XHTTP_PORT=9443
+      - REVERSE_PUBLIC_PORT=51413
+    volumes:
+      - ./data:/etc/xray
+    ports:
+      - "443:443/tcp"
+      - "8443:8443/tcp"
+      - "2443:2443/tcp"
+      - "9443:9443/tcp"
+      - "51413:51413/tcp"
+      - "51413:51413/udp"
