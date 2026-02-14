@@ -1,0 +1,18 @@
+services:
+  qb-xray-local:
+    build: .
+    container_name: qb-xray-local
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - PUID=1000
+      - PGID=100
+      - TZ=Asia/Shanghai
+      - WEBUI_PORT=8080
+    volumes:
+      - ./data/config:/config
+      - ./data/xray:/etc/xray
+      - ./data/downloads:/downloads

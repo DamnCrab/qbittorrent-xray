@@ -1,0 +1,110 @@
+{
+    "log": {
+        "loglevel": "warning"
+    },
+    "dns": {
+        "servers": [
+            {
+                "address": "223.5.5.5",
+                "port": 53,
+                "domains": [
+                    "geosite:cn"
+                ]
+            },
+            "1.1.1.1",
+            "8.8.8.8"
+        ]
+    },
+    "inbounds": [
+        {
+            "tag": "tun-in",
+            "protocol": "tun",
+            "settings": {
+                "address": [
+                    "10.0.0.1/24"
+                ],
+                "mtu": 1500,
+                "sniffing": {
+                    "enabled": true,
+                    "destOverride": [
+                        "http",
+                        "tls",
+                        "quic"
+                    ]
+                }
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "tag": "vps-out",
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": "${VPS_IP}",
+                        "port": ${VPS_PORT
+                        },
+                        "users": [
+                            {
+                                "id": "${UUID}",
+                                "encryption": "none"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "xhttp",
+                "security": "reality",
+                "realitySettings": {
+                    "publicKey": "${PUBLIC_KEY}",
+                    "fingerprint": "chrome",
+                    "serverName": "www.apple.com",
+                    "shortId": ""
+                },
+                "xhttpSettings": {
+                    "path": "${XHTTP_PATH}",
+                    "mode": "auto"
+                }
+            }
+        },
+        {
+            "tag": "direct",
+            "protocol": "freedom",
+            "settings": {}
+        }
+    ],
+    "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+            {
+                "type": "field",
+                "ip": [
+                    "192.168.8.0/24",
+                    "geoip:private"
+                ],
+                "outboundTag": "direct"
+            },
+            {
+                "type": "field",
+                "ip": [
+                    "geoip:cn"
+                ],
+                "outboundTag": "direct"
+            },
+            {
+                "type": "field",
+                "domain": [
+                    "geosite:cn"
+                ],
+                "outboundTag": "direct"
+            },
+            {
+                "type": "field",
+                "outboundTag": "vps-out",
+                "network": "udp,tcp"
+            }
+        ]
+    }
+}
