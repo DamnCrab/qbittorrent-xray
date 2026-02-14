@@ -69,6 +69,20 @@ docker-compose up -d
 ### Xray 配置
 Xray 默认读取 `/etc/xray/config.json`。GeoIP 和 GeoSite 文件位于 `/usr/bin/geoip.dat` 和 `/usr/bin/geosite.dat`，可在配置文件中直接引用 `geoip.dat` 和 `geosite.dat`。
 
+### 服务端配置 (反向代理)
+如果你使用 Xray 的 [反向代理](https://xtls.github.io/config/reverse.html) 功能，请在**服务端**配置中添加以下 `reverse` 模块，并确保防火墙已放行相关端口：
+
+```json
+"reverse": {
+  "portals": [
+    {
+      "tag": "portal",
+      "domain": "private.qb.tunnel" 
+    }
+  ]
+}
+```
+
 ## 🛠 手动构建
 
 如果你想手动构建此镜像：

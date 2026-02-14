@@ -43,3 +43,4 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ env.OWNER_LC }}/qbittorrent-xray:latest
+          provenance: false
