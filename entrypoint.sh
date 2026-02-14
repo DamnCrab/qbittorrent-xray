@@ -57,6 +57,9 @@ TUN_IFACE="${TUN_IFACE:-xray0}"
 
 TUN_ADDR="${XRAY_TUN_ADDR:-10.251.0.1/30}"
 TUN_TABLE="${XRAY_TUN_TABLE:-1001}"
+TUN_RULE_PREF="${XRAY_TUN_RULE_PREF:-100}"
+BYPASS_PREF_BASE="${XRAY_BYPASS_PREF_BASE:-80}"
+BYPASS_CIDRS="${XRAY_BYPASS_CIDRS:-127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16}"
 
 # Wait until Xray creates the tun interface
 for _ in $(seq 1 40); do
@@ -76,26 +79,49 @@ ip link set dev "$TUN_IFACE" up
 ip addr replace "$TUN_ADDR" dev "$TUN_IFACE"
 
 # qBittorrent user (linuxserver images normally run as user 'abc')
-QB_UID=""
-if id -u abc >/dev/null 2>&1; then
+QB_UID="${XRAY_QB_UID:-}"
+QB_UID_SRC=""
+if [ -n "$QB_UID" ]; then
+  QB_UID_SRC="XRAY_QB_UID"
+elif id -u abc >/dev/null 2>&1; then
   QB_UID="$(id -u abc)"
+  QB_UID_SRC="abc"
 elif [ -n "${PUID:-}" ]; then
   QB_UID="$PUID"
+  QB_UID_SRC="PUID"
 fi
 
 # Route only qBittorrent traffic via tun to avoid looping Xray's own uplink traffic
 ip route flush table "$TUN_TABLE" 2>/dev/null || true
 ip route add default dev "$TUN_IFACE" table "$TUN_TABLE"
+ip rule del pref "$TUN_RULE_PREF" 2>/dev/null || true
+
+OLD_IFS="$IFS"
+IFS=',' read -r -a BYPASS_LIST <<< "$BYPASS_CIDRS"
+IFS="$OLD_IFS"
+
+add_uid_bypass_rules() {
+  local uidrange="$1"
+  local pref="$BYPASS_PREF_BASE"
+  local cidr
+
+  for cidr in "${BYPASS_LIST[@]}"; do
+    [ -z "$cidr" ] && continue
+    ip rule del pref "$pref" uidrange "$uidrange" to "$cidr" lookup main 2>/dev/null || true
+    ip rule add pref "$pref" uidrange "$uidrange" to "$cidr" lookup main
+    pref=$((pref + 1))
+  done
+}
 
 if [ -n "$QB_UID" ]; then
-  ip rule del uidrange "${QB_UID}-${QB_UID}" lookup "$TUN_TABLE" 2>/dev/null || true
-  ip rule add uidrange "${QB_UID}-${QB_UID}" lookup "$TUN_TABLE"
-  echo "[entrypoint] TUN routing enabled on $TUN_IFACE via table $TUN_TABLE for qB uid=$QB_UID"
+  add_uid_bypass_rules "${QB_UID}-${QB_UID}"
+  ip rule add pref "$TUN_RULE_PREF" uidrange "${QB_UID}-${QB_UID}" lookup "$TUN_TABLE"
+  echo "[entrypoint] TUN routing enabled on $TUN_IFACE via table $TUN_TABLE for qB uid=$QB_UID (source=$QB_UID_SRC, pref=$TUN_RULE_PREF, bypass=$BYPASS_CIDRS)"
 else
   # Best-effort fallback when user id cannot be detected: route all non-root traffic.
-  ip rule del uidrange "1-4294967294" lookup "$TUN_TABLE" 2>/dev/null || true
-  ip rule add uidrange "1-4294967294" lookup "$TUN_TABLE"
-  echo "[entrypoint] WARNING: qB uid not found, routing all non-root traffic via $TUN_IFACE"
+  add_uid_bypass_rules "1-4294967294"
+  ip rule add pref "$TUN_RULE_PREF" uidrange "1-4294967294" lookup "$TUN_TABLE"
+  echo "[entrypoint] WARNING: qB uid not found, routing all non-root traffic via $TUN_IFACE (pref=$TUN_RULE_PREF, bypass=$BYPASS_CIDRS)"
 fi
 
 # 6) Start qBittorrent via linuxserver init

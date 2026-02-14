@@ -1,22 +1,24 @@
-# qBittorrent with Xray Tunnel
+# qbittorrent-xray
 
-[![Weekly Build](https://github.com/DamnCrab/qbittorrent-xray/actions/workflows/docker-build.yml/badge.svg)](https://github.com/DamnCrab/qbittorrent-xray/actions/workflows/docker-build.yml)
+将 qBittorrent 和 Xray 打包在同一个容器里，核心目标是：
+通过 Xray 透明接管 qB 的 TCP/UDP 流量，并配合 Xray 反向代理能力，在 NAT/CGNAT 场景下获得更好的可连接性。
 
-一个集成了 [Xray-core](https://github.com/XTLS/Xray-core) 的 qBittorrent Docker 镜像，基于 [LinuxServer.io](https://docs.linuxserver.io/images/docker-qbittorrent) 构建，专为需要代理流量的场景设计。
+## 这个项目现在做了什么
 
-## ✨ 特性
+- 容器启动后先拉起 Xray。
+- 使用 `tun` 入站（默认网卡名 `xray0`）接管流量。
+- 通过策略路由把 qBittorrent 用户（UID）流量导向 `xray0`，不需要在 qB 里额外配 SOCKS。
+- 支持通过 Xray `reverse`（bridge 侧）与服务端 `portal` 配合。
 
-- **🏗 多架构支持**：同时支持 `linux/amd64` 和 `linux/arm64` (包括 Apple Silicon)。
-- **🟢 开箱即用**：基于 LinuxServer 稳定镜像，集成 Xray 核心。
-- **🔄 自动更新**：包含 [Loyalsoldier/v2ray-rules-dat](https://github.com/Loyalsoldier/v2ray-rules-dat) 增强版规则 (GeoIP, GeoSite)。
-- **🛡 灵活配置**：支持挂载自定义 Xray 配置文件。
-- **🔌 TUN 支持**：默认开启 TUN 设备支持。
+## 前置条件
 
-## 🚀 快速部署
+- 宿主机可用 `/dev/net/tun`。
+- 容器有 `NET_ADMIN` 权限。
+- Docker / Docker Compose 可正常运行。
 
-使用 Docker Compose 部署是最简单的方式。
+## 快速部署（推荐）
 
-1. 创建 `docker-compose.yml`：
+`docker-compose.yml` 示例：
 
 ```yaml
 services:
@@ -25,72 +27,109 @@ services:
     container_name: qb-xray
     restart: unless-stopped
     cap_add:
-      - NET_ADMIN # 必须开启，以支持 TUN 模式
+      - NET_ADMIN
     devices:
-      - /dev/net/tun:/dev/net/tun # 映射 TUN 设备
+      - /dev/net/tun:/dev/net/tun
     environment:
       - PUID=1000
-      - PGID=100
+      - PGID=1000
       - TZ=Asia/Shanghai
       - WEBUI_PORT=8080
+      - XRAY_QB_UID=1000
     volumes:
-      - ./data/config:/config # qBittorrent 配置目录
-      - ./data/xray:/etc/xray # Xray 配置目录
-      - ./data/downloads:/downloads # 下载目录
+      - ./data/config:/config
+      - ./data/xray:/etc/xray
+      - ./data/downloads:/downloads
     ports:
-      - "8080:8080" # WebUI 端口
-    # 如果你需要通过 macvlan 或 host 网络模式运行，请按需调整网络配置
+      - "8080:8080"
+      - "51413:51413/tcp"
+      - "51413:51413/udp"
 ```
 
-2. 准备 Xray 配置文件：
-
-在 `./data/xray/` 目录下创建 `config.json`。
-
-> ⚠️ **注意**：如果不提供 `config.json`，容器将尝试使用内置模板，但强烈建议挂载你自己的配置以确保代理可用。
-
-3. 启动容器：
+启动：
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
-## ⚙️ 配置说明
+## Xray 配置说明
 
-### qBittorrent 代理设置
-进入 WebUI (默认 `http://IP:8080`)，在 `设置` -> `连接` -> `代理服务器` 中配置：
+- 容器读取 `/etc/xray/config.json`。
+- 仓库内 `xray_config.json` 是模板（带环境变量占位符）。
+- 生产环境建议你明确挂载自己的 `./data/xray/config.json`，不要依赖默认模板推断。
 
-- **类型**: `SOCKS5`
-- **主机**: `127.0.0.1`
-- **端口**: `10808` (假设你的 Xray 入站端口配置为 10808)
-- **勾选**: `对 BitTorrent 使用代理` (可选，根据需求)
+当前仓库默认是 `tun` 方案，`inbounds` 关键字段建议至少包含：
 
-如果你的 Xray 配置了 **透明代理** (TProxy/TUN)，则可能不需要在 qBittorrent 内部设置代理，只需确保容器内的流量被路由表规则捕获即可。
+```json
+{
+  "tag": "tun-in",
+  "port": 0,
+  "protocol": "tun",
+  "settings": {
+    "name": "xray0",
+    "MTU": 1500
+  }
+}
+```
 
-### Xray 配置
-Xray 默认读取 `/etc/xray/config.json`。GeoIP 和 GeoSite 文件位于 `/usr/bin/geoip.dat` 和 `/usr/bin/geosite.dat`，可在配置文件中直接引用 `geoip.dat` 和 `geosite.dat`。
+## 反向代理（Reverse）定位
 
-### 服务端配置 (反向代理)
-如果你使用 Xray 的 [反向代理](https://xtls.github.io/config/reverse.html) 功能，请在**服务端**配置中添加以下 `reverse` 模块，并确保防火墙已放行相关端口：
+这个仓库中的 `reverse.bridges` 是 qB 所在侧（bridge 侧）配置的一部分。  
+要让公网入站真正提升可连接性，你还需要在服务端配置对应的 `reverse.portals` 和入站转发策略。
+
+服务端至少要有：
 
 ```json
 "reverse": {
   "portals": [
     {
       "tag": "portal",
-      "domain": "private.qb.tunnel" 
+      "domain": "private.qb.tunnel"
     }
   ]
 }
 ```
 
-## 🛠 手动构建
+## qBittorrent 侧建议
 
-如果你想手动构建此镜像：
+- `Network Interface` 设为 `Any interface`（默认更兼容）。
+- 不强制要求在 qB 内再配置 SOCKS5（当前方案是透明接管）。
+- 监听端口与映射端口保持一致（例如 `51413`）。
+
+## 如何确认 qB 流量已走 Xray
+
+查看启动日志（应出现 TUN 路由生效日志）：
 
 ```bash
-# 构建当前架构
-docker build -t qb-xray-local .
+docker logs qb-xray | tail -n 80
+```
 
-# 构建多架构 (需 Docker Buildx)
+容器内检查策略路由：
+
+```bash
+docker exec -it qb-xray sh -lc 'uid=$(id -u abc); ip rule show | grep "$uid-$uid"; ip route get 1.1.1.1 uid $uid'
+```
+
+期望结果包含：
+
+- `uidrange 1000-1000 lookup 1001`（或你的 UID）
+- `1.1.1.1 dev xray0 table 1001 ...`
+
+下载任务运行中可继续观察：
+
+```bash
+docker exec -it qb-xray sh -lc 'ip -s link show xray0'
+```
+
+## 常见问题
+
+- `ip route get` 仍走 `eth0`：通常是 UID 规则未命中。优先设置 `XRAY_QB_UID`，然后重建容器。
+- 看不到 `xray0`：检查 `/dev/net/tun` 映射和 `NET_ADMIN`；必要时临时用 `privileged: true` 排查。
+- “经过 Xray”但不是“全走 VPS”：检查 `routing.rules` 里是否保留了 `direct` 规则（如 `geoip:private`、`geoip:cn`、`geosite:cn`）。
+
+## 手动构建镜像
+
+```bash
+docker build -t qb-xray-local .
 docker buildx build --platform linux/amd64,linux/arm64 -t your-repo/qb-xray:latest .
 ```
